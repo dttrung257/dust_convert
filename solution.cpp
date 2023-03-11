@@ -163,77 +163,32 @@ bool checkCommand(const string& command) {
 /*
 ** Convert: from .csv to .dat
 */
-int hexToInt(string hex) {
-    int decimal = 0;
-    int base = 1;
-    int n = hex.length();
-    for (int i = n - 1; i >= 0; i--) {
-        if (hex[i] >= '0' && hex[i] <= '9') {
-            decimal += (hex[i] - 48) * base;
-            base = base * 16;
-        } else if (hex[i] >= 'A' && hex[i] <= 'F') {
-            decimal += (hex[i] - 55) * base;
-            base = base * 16;
-        } else if (hex[i] >= 'a' && hex[i] <= 'f') {
-            decimal += (hex[i] - 87) * base;
-            base = base * 16;
-        }
-    }
-    return decimal;
-}
 
-string binary_to_hex(string binary) {
-    string hex = "";
-    int n = binary.length();
-    int i;
-    for (i = 0; i < n; i += 4) {
-        int decimal = 0;
-        int j;
-        for (j = 0; j < 4; j++) {
-            decimal = decimal * 2 + (binary[i + j] - '0');
-        }
-        if (decimal >= 0 && decimal <= 9) {
-            hex += (char)(decimal + '0');
-        } else {
-            hex += (char)(decimal - 10 + 'A');
-        }
-    }
-    return hex;
-}
-
-string twos_complement(string binary) {
-    int n = binary.length();
-    int i;
-    for (i = n - 1; i >= 0; i--) {
-        if (binary[i] == '0') {
-            binary[i] = '1';
-            break;
-        } else {
-            binary[i] = '0';
-        }
-    }
-    // Add 1 to the rightmost side
-    for (i = n - 1; i >= 0; i--) {
-        if (binary[i] == '0') {
-            binary[i] = '1';
-            break;
-        } else {
-            binary[i] = '0';
-        }
-    }
-    return binary;
-}
-
-string calChecksum(string hex_id, string hex_second, string hex_value,
-                   string hex_aqi) {
-    int sum = hexToInt(hex_id) + hexToInt(hex_second) + hexToInt(hex_value) +
-              hexToInt(hex_aqi);
-    bitset<32> binary(sum);
-    string binary_sum = binary.to_string();
-    string twos_complement_sum = twos_complement(binary_sum);
-    string hex_checksum = binary_to_hex(twos_complement_sum);
-    hex_checksum = hex_checksum.substr(hex_checksum.length() - 2, 2);
-    return hex_checksum;
+string calculateChecksum(const string& packetLength, const string& id,
+                         const string& time, const string& pm25,
+                         const string& aqi) {
+    // cout << packetLength << " " << id << " " << time << " " << pm25 << " "
+    //      << aqi << endl;
+    // Tính tổng các byte
+    unsigned int sum = stoi(packetLength, nullptr, 16) + stoi(id, nullptr, 16) +
+                       stoi(time.substr(0, 2), nullptr, 16) +
+                       stoi(time.substr(2, 2), nullptr, 16) +
+                       stoi(time.substr(4, 2), nullptr, 16) +
+                       stoi(time.substr(6, 2), nullptr, 16) +
+                       stoi(pm25.substr(0, 2), nullptr, 16) +
+                       stoi(pm25.substr(2, 2), nullptr, 16) +
+                       stoi(pm25.substr(4, 2), nullptr, 16) +
+                       stoi(pm25.substr(6, 2), nullptr, 16) +
+                       stoi(aqi.substr(0, 2), nullptr, 16) +
+                       stoi(aqi.substr(2, 2), nullptr, 16);
+    // Lấy phần dư khi chia cho 256
+    unsigned char remainder = sum % 0x100;
+    // Tính phần bù 2 của phần dư
+    unsigned char checksum = 0xff - remainder + 1;
+    stringstream ss;
+    ss << hex << static_cast<int>(checksum);
+    string checksumHex = ss.str();
+    return checksumHex;
 }
 
 vector<string> readFile(string file_name) {
@@ -258,10 +213,10 @@ string formatHex(string str) {
     string result;
     for (int i = 0; i < str.length(); i++) {
         if (i % 2 == 1 && i < str.length() - 1) {
-            result += toupper(str[i]);
+            result += tolower(str[i]);
             result += ' ';
         } else {
-            result += toupper(str[i]);
+            result += tolower(str[i]);
         }
     }
     return result;
@@ -330,7 +285,7 @@ bool isValidValue(string s) {
     return false;
 }
 
-bool isValidLine(string line) {
+bool isValidLineCsv(string line) {
     vector<string> items = split(line, ',');
     if (items.size() != 5) {
         return false;
@@ -376,7 +331,7 @@ void encode(string inputFilename, string outputFilename) {
     vector<string> lines = readFile(inputFilename);
     vector<int> errorPositions;
     for (int i = 1; i < lines.size(); i++) {
-        if (!isValidLine(lines[i])) {
+        if (!isValidLineCsv(lines[i])) {
             writeToFile(
                 "dust_convert_error.log",
                 "Error 04: data is missing at line " + to_string(i + 1));
@@ -407,6 +362,9 @@ void encode(string inputFilename, string outputFilename) {
     vector<string> results;
     for (int i = 1; i < lines.size(); i++) {
         vector<string> items = split(lines[i], ',');
+        if (isErrorPosition(errorPositions, i - 1)) {
+            continue;
+        }
         for (int j = 0; j < items.size(); j++) {
             results.push_back(items[j]);
         }
@@ -417,10 +375,6 @@ void encode(string inputFilename, string outputFilename) {
     vector<string> aqis;
     vector<string> checksums;
     for (int i = 0; i < results.size(); i++) {
-        int index = i / 5;
-        if (isErrorPosition(errorPositions, index)) {
-            continue;
-        }
         if (i % 5 == 0) {
             int id = stod(results[i]);
             stringstream ss;
@@ -439,11 +393,12 @@ void encode(string inputFilename, string outputFilename) {
             stream << hex << second;
             string hex_second = stream.str();
             if (hex_second.length() < 8) {
-                for (int j = 0; j < (8 - hex_second.length()); j++) {
+                int len = hex_second.length();
+                for (int j = 0; j < (8 - len); j++) {
                     hex_second = "0" + hex_second;
                 }
             }
-            seconds.push_back(formatHex(hex_second));
+            seconds.push_back(hex_second);
         } else if (i % 5 == 2) {
             float value = stof(results[i]);
             unsigned int i;
@@ -454,31 +409,37 @@ void encode(string inputFilename, string outputFilename) {
             stream << hex << b.to_ulong();
             string hex_value(stream.str());
             if (hex_value.length() < 8) {
-                for (int j = 0; j < (8 - hex_value.length()); j++) {
+                int len = hex_value.length();
+                for (int j = 0; j < (8 - len); j++) {
                     hex_value = "0" + hex_value;
                 }
             }
-            values.push_back(formatHex(hex_value));
+            values.push_back(hex_value);
         } else if (i % 5 == 3) {
             int aqi = stod(results[i]);
             stringstream ss;
             ss << hex << aqi;
             string hex_aqi = ss.str();
             if (hex_aqi.length() < 4) {
-                for (int j = 0; j < (4 - hex_aqi.length()); j++) {
+                int len = hex_aqi.length();
+                for (int j = 0; j < (4 - len); j++) {
                     hex_aqi = "0" + hex_aqi;
                 }
             }
-            aqis.push_back(formatHex(hex_aqi));
+            aqis.push_back(hex_aqi);
         }
     }
     // vector<string> encoded_lines;
     ofstream of(outputFilename);
     for (int i = 0; i < ids.size(); i++) {
-        string line = "00 0F " + ids[i] + " " + seconds[i] + " " + values[i] +
-                      " " + aqis[i] + " " +
-                      calChecksum(ids[i], seconds[i], values[i], aqis[i]) +
-                      " FF";
+        string checksum =
+            calculateChecksum("0f", ids[i], seconds[i], values[i], aqis[i]);
+        if (checksum.length() < 2) {
+            checksum = '0' + checksum;
+        }
+        string line = "00 0f " + ids[i] + " " + formatHex(seconds[i]) + " " +
+                      formatHex(values[i]) + " " + formatHex(aqis[i]) + " " +
+                      checksum + " ff";
         of << line << endl;
     }
     of.close();
@@ -516,8 +477,10 @@ vector<int> bubbleSort(vector<vector<float>> values, string type) {
         }
         auto end = chrono::high_resolution_clock::now();
         auto diff = end - start;
-        cout << "Time taken: " << chrono::duration<double, milli>(diff).count()
-             << " milliseconds" << endl;
+        double time = chrono::duration<double, milli>(diff).count();
+        writeToFile("dust_convert_run.log",
+                    "Sorting algorithm bubble with swap check [ms]: " +
+                        to_string(time));
     } else if (type == "-desc") {
         auto start = chrono::high_resolution_clock::now();
         bool swapped;
@@ -540,8 +503,10 @@ vector<int> bubbleSort(vector<vector<float>> values, string type) {
         }
         auto end = chrono::high_resolution_clock::now();
         auto diff = end - start;
-        cout << "Time taken: " << chrono::duration<double, milli>(diff).count()
-             << " milliseconds" << endl;
+        double time = chrono::duration<double, milli>(diff).count();
+        writeToFile("dust_convert_run.log",
+                    "Sorting algorithm bubble with swap check [ms]: " +
+                        to_string(time));
     }
     vector<int> sortedPositions;
     for (int i = 0; i < pairs.size(); i++) {
@@ -586,8 +551,9 @@ vector<int> insertionSort(vector<vector<float>> values, string type) {
         }
         auto end = chrono::high_resolution_clock::now();
         auto diff = end - start;
-        cout << "Time taken: " << chrono::duration<double, milli>(diff).count()
-             << " milliseconds" << endl;
+        double time = chrono::duration<double, milli>(diff).count();
+        writeToFile("dust_convert_run.log",
+                    "Sorting algorithm insertion[ms]: " + to_string(time));
     } else if (type == "-desc") {
         auto start = chrono::high_resolution_clock::now();
         for (int i = 1; i < pairs.size(); i++) {
@@ -601,8 +567,9 @@ vector<int> insertionSort(vector<vector<float>> values, string type) {
         }
         auto end = chrono::high_resolution_clock::now();
         auto diff = end - start;
-        cout << "Time taken: " << chrono::duration<double, milli>(diff).count()
-             << " milliseconds" << endl;
+        double time = chrono::duration<double, milli>(diff).count();
+        writeToFile("dust_convert_run.log",
+                    "Sorting algorithm insertion[ms]: " + to_string(time));
     }
     vector<int> sortedPositions;
     for (int i = 0; i < pairs.size(); i++) {
@@ -619,8 +586,17 @@ float hexValueToFloat(string hexString) {
     sscanf(hexString.c_str(), "%x", &hexInt);
     float result;
     memcpy(&result, &hexInt, sizeof(result));
+    return round(result * pow(10, 1)) / pow(10, 1);
+}
 
-    return result;
+string removeTrailingZeros(string str) {
+    int len = str.length();
+    int i = len - 1;
+    while (str[i] == '0' && str[i - 1] != '.') {
+        str.erase(i, 1);
+        i--;
+    }
+    return str;
 }
 
 float hexAQIToFloat(string hexString) {
@@ -643,12 +619,188 @@ float hexAQIToFloat(string hexString) {
     return result;
 }
 
+// Check error file .dat
+bool isValidHexId(const string& hexString) {
+    if (hexString.size() != 2) {
+        return false;
+    }
+    for (char c : hexString) {
+        if (!isxdigit(c)) {
+            return false;
+        }
+    }
+    int num = stoi(hexString, nullptr, 16);
+    return num > 0 && num <= 255;
+}
+
+bool isValidHexTime(const string& hexTime) {
+    if (hexTime.size() != 8) {
+        return false;
+    }
+    for (char c : hexTime) {
+        if (!isxdigit(c)) {
+            return false;
+        }
+    }
+    stringstream ss;
+    ss << hex << hexTime;
+    uint32_t time_stamp;
+    ss >> time_stamp;
+    auto now = chrono::system_clock::now().time_since_epoch();
+    auto seconds = chrono::duration_cast<chrono::seconds>(now).count();
+    return time_stamp < seconds;
+}
+
+bool isValidHexValue(const string& hexValue) {
+    if (hexValue.size() != 8) {
+        return false;
+    }
+    for (char c : hexValue) {
+        if (!isxdigit(c)) {
+            return false;
+        }
+    }
+    unsigned int hexInt;
+    sscanf(hexValue.c_str(), "%x", &hexInt);
+    float value;
+    memcpy(&value, &hexInt, sizeof(value));
+
+    return (value > 0) && (value <= 550.5);
+}
+
+bool isValidHexAQI(const string& hexAQI) {
+    if (hexAQI.size() != 4) {
+        return false;
+    }
+    for (char c : hexAQI) {
+        if (!isxdigit(c)) {
+            return false;
+        }
+    }
+    stringstream ss;
+    ss << hex << hexAQI;
+    int value;
+    ss >> value;
+    return (value > 0) && (value <= 500);
+}
+
+float valueToAQI(float value, float in_min, float in_max, float out_min,
+                 float out_max) {
+    return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+int calculateAQIFromValue(float value) {
+    if (value > 0 && value < 12) {
+        return round(valueToAQI(value, 0, 12, 0, 50));
+    } else if (value >= 12 && value < 35.5) {
+        return round(valueToAQI(value, 12, 35.5, 50, 100));
+    } else if (value >= 35.5 && value < 55.5) {
+        return round(valueToAQI(value, 35.5, 55.5, 100, 150));
+    } else if (value >= 55.5 && value < 150.5) {
+        return round(valueToAQI(value, 55.5, 150.5, 150, 200));
+    } else if (value >= 150.5 && value < 250.5) {
+        return round(valueToAQI(value, 150.5, 250.5, 200, 300));
+    } else if (value >= 250.5 && value < 350.5) {
+        return round(valueToAQI(value, 250.5, 350.5, 300, 400));
+    } else if (value >= 350.5 && value <= 550.5) {
+        return round(valueToAQI(value, 350.5, 550.5, 400, 500));
+    } else {
+        return -1;
+    }
+}
+
+bool isValidLineHex(string line) {
+    vector<string> items = split(line, ' ');
+    if (items.size() != 15) {
+        return false;
+    }
+    string startByte = items[0];
+    if (startByte != "00") {
+        return false;
+    }
+    string packetLength = items[1];
+    if (packetLength != "0F" && packetLength != "0f") {
+        return false;
+    }
+    string id = items[2];
+    if (!isValidHexId(id)) {
+        return false;
+    }
+    string time = items[3] + items[4] + items[5] + items[6];
+    if (!isValidHexTime(time)) {
+        return false;
+    }
+    string value = items[7] + items[8] + items[9] + items[10];
+    if (!isValidHexValue(value)) {
+        return false;
+    }
+    string aqi = items[11] + items[12];
+    if (!isValidHexAQI(aqi)) {
+        return false;
+    }
+    string checkSum = items[13];
+    string correctCheckSum =
+        calculateChecksum(packetLength, id, time, value, aqi);
+    for (char c : checkSum) {
+        c = toupper(c);
+    }
+    for (char c : correctCheckSum) {
+        c = toupper(c);
+    }
+    if (checkSum != correctCheckSum) {
+        return false;
+    }
+    int correctAQI = calculateAQIFromValue(hexValueToFloat(value));
+    int aqi_value = stoi(aqi, nullptr, 16);
+    if (correctAQI != aqi_value) {
+        return false;
+    }
+    string stopByte = items[14];
+    if (stopByte != "ff" && stopByte != "FF" && stopByte != "fF" &&
+        stopByte != "Ff") {
+        return false;
+    }
+    return true;
+}
+
 void decode(string inputFilename, string outputFilename, vector<string> sortBy,
             string order) {
     vector<string> lines = readFile(inputFilename);
+    vector<int> errorPositions;
+    for (int i = 0; i < lines.size(); i++) {
+        if (!isValidLineHex(lines[i])) {
+            writeToFile(
+                "dust_convert_error.log",
+                "Error 06: invalid data packet at line " + to_string(i + 1));
+            errorPositions.push_back(i);
+        }
+    }
+    for (int i = 0; i < lines.size() - 1; i++) {
+        for (int j = i + 1; j < lines.size(); j++) {
+            if (!isErrorPosition(errorPositions, i) &&
+                !isErrorPosition(errorPositions, j) && lines[i] == lines[j]) {
+                errorPositions.push_back(j);
+                writeToFile("dust_convert_error.log",
+                            "Error 05: duplicated data at lines " +
+                                to_string(i + 1) + ", " + to_string(j + 1));
+            }
+        }
+    }
+    int numLines = lines.size() - 1;
+    int numErrorLines = errorPositions.size();
+    int numValidLines = numLines - numErrorLines;
+    writeToFile("dust_convert_run.log",
+                "Total number of rows: " + to_string(numLines));
+    writeToFile("dust_convert_run.log",
+                "Succesfully converted rows: " + to_string(numValidLines));
+    writeToFile("dust_convert_run.log",
+                "Error rows: " + to_string(numErrorLines));
     vector<string> results;
     for (int i = 0; i < lines.size(); i++) {
         vector<string> items = split(lines[i], ' ');
+        if (isErrorPosition(errorPositions, i)) {
+            continue;
+        }
         results.push_back(items[0]);  // start byte
         results.push_back(items[1]);  // packet length
         results.push_back(items[2]);  // id
@@ -790,17 +942,28 @@ void decode(string inputFilename, string outputFilename, vector<string> sortBy,
     }
     if (sortBy.size() < 1) {
         for (int i = 0; i < ids.size(); i++) {
-            string line = to_string(ids[i]) + "," + times[i] + "," +
-                          to_string(values[i]) + "," + to_string(aqis[i]) +
-                          "," + pollutions[i];
+            stringstream ss;
+            ss << values[i];
+            string strValue = ss.str();
+            if (isPositiveInteger(strValue)) {
+                strValue += ".0";
+            }
+            string line = to_string((int)ids[i]) + "," + times[i] + "," +
+                          strValue + "," + to_string((int)aqis[i]) + "," +
+                          pollutions[i];
             of << line << endl;
         }
         of.close();
     } else {
         for (int i = 0; i < ids.size(); i++) {
+            stringstream ss;
+            ss << values[sortedPositions[i]];
+            string strValue = ss.str();
+            if (isPositiveInteger(strValue)) {
+                strValue += ".0";
+            }
             string line = to_string((int)ids[sortedPositions[i]]) + "," +
-                          times[sortedPositions[i]] + "," +
-                          to_string(values[sortedPositions[i]]) + "," +
+                          times[sortedPositions[i]] + "," + strValue + "," +
                           to_string(aqis[sortedPositions[i]]) + "," +
                           pollutions[sortedPositions[i]];
             of << line << endl;
@@ -831,7 +994,6 @@ int main() {
         }
         if (tokens.size() == 6) {
             vector<string> fields = split(tokens[4], ',');
-            cout << fields.size();
             decode(tokens[1], tokens[2], fields, tokens[5]);
         }
     }
